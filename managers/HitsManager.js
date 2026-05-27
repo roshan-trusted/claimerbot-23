@@ -1,100 +1,59 @@
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const fs = require('fs');
-const path = require('path');
 
-const dbPath = path.join(process.cwd(), 'database.json');
-
-// Helper to initialize the JSON database if it doesn't exist
-function initDB() {
-  if (!fs.existsSync(dbPath)) {
-    fs.writeFileSync(dbPath, JSON.stringify({ hits: {} }, null, 2));
-  }
-}
-
-class HitsManager {
-  static async processHitsEmbed(message, client) {
+module.exports = {
+  async processHitsEmbed(message, client) {
     try {
-      console.log(`⚙️ [HitsManager] Analyzing message sequence... Waiting for API settlement...`);
+      if (!message.embeds.length) return;
 
-      setTimeout(async () => {
-        const fetchedMessage = await message.channel.messages.fetch(message.id).catch(() => null);
-        
-        if (!fetchedMessage) {
-          console.error('❌ [HitsManager Error] Could not refetch the message payload from Discord API.');
-          return;
+      const embed = message.embeds[0];
+      const hitDescription = embed.description || '';
+
+      // Extract account info from the embed
+      const lines = hitDescription.split('\n');
+      let username = 'Unknown';
+      let email = 'Unknown';
+
+      lines.forEach(line => {
+        if (line.includes('Username') || line.includes('username')) {
+          username = line.split(':')[1]?.trim() || username;
         }
-
-        if (!fetchedMessage.embeds.length) return;
-
-        const embed = fetchedMessage.embeds[0];
-        // Use the raw message ID as our unique database key
-        const accountId = fetchedMessage.id; 
-
-        // 1. Scrub and extract all data from the webhook
-        const fields = {};
-        if (embed.fields && embed.fields.length > 0) {
-          embed.fields.forEach(field => {
-            const cleanedValue = field.value
-              .replace(/```/g, '')
-              .replace(/`/g, '')
-              .replace(/\\r\\n/g, '')
-              .replace(/\\n/g, '')
-              .replace(/\n/g, '')
-              .trim();
-            
-            fields[field.name.trim()] = cleanedValue;
-          });
+        if (line.includes('Email') || line.includes('email')) {
+          email = line.split(':')[1]?.trim() || email;
         }
+      });
 
-        const extractedUsername = fields['Username'];
-        const extractedCapes = fields['Capes'] || 'N/A';
-        const extractedRank = fields['Rank'] || fields['Owns MC'] || 'N/A';
+      const accountId = `ACC-${Date.now()}`;
 
-        if (!extractedUsername) {
-          console.error('❌ [HitsManager Error] "Username" returned empty. Aborting routing.');
-          return;
-        }
+      // Create Components v2 Embed
+      const claimEmbed = new EmbedBuilder()
+        .setColor('#FF6B9D')
+        .setTitle('🎮 New Account Available')
+        .setDescription(`**Username:** ${username}\n**Email:** ${email}`)
+        .addFields(
+          { name: '📊 Status', value: '```Unclaimed```', inline: true },
+          { name: '⭐ Rank', value: '```Loading...```', inline: true },
+          { name: '🎨 Capes', value: '```Unknown```', inline: true }
+        )
+        .setTimestamp()
+        .setFooter({ text: 'Claim this account before it\'s gone!' });
 
-        // 2. SAVE EVERYTHING TO JSON DB
-        initDB();
-        const db = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
-        db.hits[accountId] = fields; // Store all scrubbed data directly into the JSON
-        fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
+      // Create button row
+      const claimButton = new ButtonBuilder()
+        .setCustomId(`claim_${accountId}`)
+        .setLabel('🚀 Claim Account')
+        .setStyle(ButtonStyle.Success);
 
-        // 3. Generate the visual embed for #claims
-        const claimEmbed = new EmbedBuilder()
-          .setColor('#8B0000')
-          .setTitle('New Hit Detected!')
-          .setThumbnail(`https://mc-heads.net/avatar/steve`)
-          .addFields(
-            { name: 'Username', value: `\`\`\`Hidden\`\`\`` },
-            { name: 'Capes', value: `\`\`\`${extractedCapes}\`\`\`` },
-            { name: 'Own Mc?', value: `\`\`\`${extractedRank}\`\`\`` }
-          )
-          .setTimestamp();
+      const row = new ActionRowBuilder().addComponents(claimButton);
 
-        // Button only needs the accountId to look up data in the JSON
-        const claimButton = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId(`claim_${accountId}`) 
-            .setLabel('Claim Account')
-            .setStyle(ButtonStyle.Success)
-        );
+      // Send the embed
+      const sentMessage = await message.channel.send({
+        embeds: [claimEmbed],
+        components: [row],
+      });
 
-        const claimsChannel = client.channels.cache.get(process.env.CLAIMS_CHANNEL_ID);
-        if (!claimsChannel) return;
-
-        const sentMessage = await claimsChannel.send({ embeds: [claimEmbed], components: [claimButton] });
-        console.log(`✅ [HitsManager Success] Dispatched to #claims. Message ID: ${sentMessage.id}`);
-
-        await fetchedMessage.react('✅').catch(() => null);
-
-      }, 1500);
-
+      console.log(`✅ Hit processed: ${username}`);
     } catch (error) {
-      console.error('❌ Critical failure caught within processHitsEmbed:', error);
+      console.error('Error processing hits embed:', error);
     }
-  }
-}
-
-module.exports = HitsManager;
+  },
+};

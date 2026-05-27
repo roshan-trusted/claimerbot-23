@@ -1,195 +1,191 @@
-const sqlite3 = require('sqlite3').verbose();
+const fs = require('fs');
 const path = require('path');
 
 class Database {
   constructor() {
-    this.db = new sqlite3.Database(path.join(__dirname, 'database.sqlite'), (err) => {
-      if (err) console.error(err);
-      else console.log('✅ SQLite database connected');
-    });
-    this.initializeDatabase();
+    this.dataDir = path.join(__dirname, 'data');
+    this.accountsFile = path.join(this.dataDir, 'accounts.json');
+    this.licensesFile = path.join(this.dataDir, 'licenses.json');
+    this.subscriptionsFile = path.join(this.dataDir, 'subscriptions.json');
+    this.logsFile = path.join(this.dataDir, 'logs.json');
+
+    // Create data directory if it doesn't exist
+    if (!fs.existsSync(this.dataDir)) {
+      fs.mkdirSync(this.dataDir, { recursive: true });
+    }
+
+    // Initialize files
+    this.initializeFiles();
+    console.log('✅ JSON database initialized');
   }
 
-  initializeDatabase() {
-    this.db.serialize(() => {
-      // Licenses table
-      this.db.run(`
-        CREATE TABLE IF NOT EXISTS licenses (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          license_key TEXT UNIQUE NOT NULL,
-          days INTEGER NOT NULL,
-          owner_id TEXT NOT NULL,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          redeemed_by TEXT,
-          redeemed_at DATETIME,
-          expires_at DATETIME
-        )
-      `);
+  initializeFiles() {
+    const files = [
+      { path: this.accountsFile, default: [] },
+      { path: this.licensesFile, default: [] },
+      { path: this.subscriptionsFile, default: [] },
+      { path: this.logsFile, default: [] },
+    ];
 
-      // Subscriptions table
-      this.db.run(`
-        CREATE TABLE IF NOT EXISTS subscriptions (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          user_id TEXT UNIQUE NOT NULL,
-          days_remaining INTEGER NOT NULL,
-          expires_at DATETIME NOT NULL,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          accounts_claimed INTEGER DEFAULT 0
-        )
-      `);
-
-      // Claimed accounts table
-      this.db.run(`
-        CREATE TABLE IF NOT EXISTS claimed_accounts (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          account_id TEXT UNIQUE NOT NULL,
-          claimed_by TEXT NOT NULL,
-          username TEXT NOT NULL,
-          email TEXT NOT NULL,
-          recovery_code TEXT NOT NULL,
-          password TEXT NOT NULL,
-          secret_key TEXT NOT NULL,
-          rank TEXT,
-          capes TEXT,
-          claimed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          message_id TEXT
-        )
-      `);
-
-      // Logs table
-      this.db.run(`
-        CREATE TABLE IF NOT EXISTS logs (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          action TEXT NOT NULL,
-          user_id TEXT NOT NULL,
-          details TEXT,
-          timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
+    files.forEach(file => {
+      if (!fs.existsSync(file.path)) {
+        fs.writeFileSync(file.path, JSON.stringify(file.default, null, 2));
+      }
     });
+  }
+
+  // Read file safely
+  readFile(filePath) {
+    try {
+      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch (err) {
+      console.error(`Error reading ${filePath}:`, err);
+      return [];
+    }
+  }
+
+  // Write file safely
+  writeFile(filePath, data) {
+    try {
+      fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    } catch (err) {
+      console.error(`Error writing to ${filePath}:`, err);
+    }
   }
 
   // License operations
   generateLicense(days, ownerId) {
-    return new Promise((resolve, reject) => {
-      const license = `VASCO-${Math.random().toString(36).substr(2, 15).toUpperCase()}`;
-      const expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+    const license = `VASCO-${Math.random().toString(36).substr(2, 15).toUpperCase()}`;
+    const licenses = this.readFile(this.licensesFile);
+    const expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
 
-      this.db.run(
-        `INSERT INTO licenses (license_key, days, owner_id, expires_at) VALUES (?, ?, ?, ?)`,
-        [license, days, ownerId, expiresAt],
-        function (err) {
-          if (err) reject(err);
-          else resolve(license);
-        }
-      );
+    licenses.push({
+      id: Date.now(),
+      license_key: license,
+      days,
+      owner_id: ownerId,
+      created_at: new Date().toISOString(),
+      redeemed_by: null,
+      redeemed_at: null,
+      expires_at: expiresAt,
     });
+
+    this.writeFile(this.licensesFile, licenses);
+    return license;
   }
 
   redeemLicense(licenseKey, userId) {
-    return new Promise((resolve, reject) => {
-      this.db.get(
-        `SELECT * FROM licenses WHERE license_key = ? AND redeemed_by IS NULL`,
-        [licenseKey],
-        (err, row) => {
-          if (err) reject(err);
-          else if (!row) resolve(null);
-          else {
-            const expiresAt = new Date(Date.now() + row.days * 24 * 60 * 60 * 1000).toISOString();
-            this.db.run(
-              `UPDATE licenses SET redeemed_by = ?, redeemed_at = ? WHERE license_key = ?`,
-              [userId, new Date().toISOString(), licenseKey],
-              (err) => {
-                if (err) reject(err);
-                else {
-                  this.db.run(
-                    `INSERT OR REPLACE INTO subscriptions (user_id, days_remaining, expires_at) VALUES (?, ?, ?)`,
-                    [userId, row.days, expiresAt],
-                    (err) => {
-                      if (err) reject(err);
-                      else resolve(row);
-                    }
-                  );
-                }
-              }
-            );
-          }
-        }
-      );
-    });
+    const licenses = this.readFile(this.licensesFile);
+    const license = licenses.find(l => l.license_key === licenseKey && !l.redeemed_by);
+
+    if (!license) return null;
+
+    license.redeemed_by = userId;
+    license.redeemed_at = new Date().toISOString();
+    this.writeFile(this.licensesFile, licenses);
+
+    // Create subscription
+    const subscriptions = this.readFile(this.subscriptionsFile);
+    const expiresAt = new Date(Date.now() + license.days * 24 * 60 * 60 * 1000).toISOString();
+
+    const existingIndex = subscriptions.findIndex(s => s.user_id === userId);
+    if (existingIndex > -1) {
+      subscriptions[existingIndex].expires_at = expiresAt;
+      subscriptions[existingIndex].days_remaining = license.days;
+    } else {
+      subscriptions.push({
+        id: Date.now(),
+        user_id: userId,
+        days_remaining: license.days,
+        expires_at: expiresAt,
+        created_at: new Date().toISOString(),
+        accounts_claimed: 0,
+      });
+    }
+
+    this.writeFile(this.subscriptionsFile, subscriptions);
+    return license;
   }
 
   // Subscription operations
   getSubscription(userId) {
-    return new Promise((resolve, reject) => {
-      this.db.get(
-        `SELECT * FROM subscriptions WHERE user_id = ? AND expires_at > datetime('now')`,
-        [userId],
-        (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        }
-      );
-    });
+    const subscriptions = this.readFile(this.subscriptionsFile);
+    const sub = subscriptions.find(
+      s => s.user_id === userId && new Date(s.expires_at) > new Date()
+    );
+    return sub || null;
   }
 
   updateAccountsClaimed(userId) {
-    return new Promise((resolve, reject) => {
-      this.db.run(
-        `UPDATE subscriptions SET accounts_claimed = accounts_claimed + 1 WHERE user_id = ?`,
-        [userId],
-        (err) => {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
+    const subscriptions = this.readFile(this.subscriptionsFile);
+    const sub = subscriptions.find(s => s.user_id === userId);
+    if (sub) {
+      sub.accounts_claimed++;
+      this.writeFile(this.subscriptionsFile, subscriptions);
+    }
   }
 
   // Account operations
   claimAccount(accountId, userId, username, email, recoveryCode, password, secretKey, rank, capes, messageId) {
-    return new Promise((resolve, reject) => {
-      this.db.run(
-        `INSERT INTO claimed_accounts (account_id, claimed_by, username, email, recovery_code, password, secret_key, rank, capes, message_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [accountId, userId, username, email, recoveryCode, password, secretKey, rank, capes, messageId],
-        function (err) {
-          if (err) reject(err);
-          else resolve(this.lastID);
-        }
-      );
-    });
+    const accounts = this.readFile(this.accountsFile);
+    const account = {
+      id: accountId,
+      account_id: accountId,
+      claimed_by: userId,
+      username,
+      email,
+      recovery_code: recoveryCode,
+      password,
+      secret_key: secretKey,
+      rank,
+      capes,
+      claimed_at: new Date().toISOString(),
+      message_id: messageId,
+      status: 'claimed',
+    };
+    accounts.push(account);
+    this.writeFile(this.accountsFile, accounts);
+    return account;
   }
 
   getAccountByMessageId(messageId) {
-    return new Promise((resolve, reject) => {
-      this.db.get(
-        `SELECT * FROM claimed_accounts WHERE message_id = ?`,
-        [messageId],
-        (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        }
-      );
-    });
+    const accounts = this.readFile(this.accountsFile);
+    return accounts.find(a => a.message_id === messageId) || null;
+  }
+
+  getUserAccounts(userId) {
+    const accounts = this.readFile(this.accountsFile);
+    return accounts.filter(a => a.claimed_by === userId);
+  }
+
+  sellAccount(accountId, price) {
+    const accounts = this.readFile(this.accountsFile);
+    const account = accounts.find(a => a.account_id === accountId);
+    if (account) {
+      account.status = 'selling';
+      account.price = price;
+      account.sold_at = new Date().toISOString();
+      this.writeFile(this.accountsFile, accounts);
+    }
+    return account;
+  }
+
+  getAccountById(accountId) {
+    const accounts = this.readFile(this.accountsFile);
+    return accounts.find(a => a.account_id === accountId) || null;
   }
 
   // Logs
   addLog(action, userId, details) {
-    return new Promise((resolve, reject) => {
-      this.db.run(
-        `INSERT INTO logs (action, user_id, details) VALUES (?, ?, ?)`,
-        [action, userId, details],
-        (err) => {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
+    const logs = this.readFile(this.logsFile);
+    logs.push({
+      id: Date.now(),
+      action,
+      user_id: userId,
+      details,
+      timestamp: new Date().toISOString(),
     });
-  }
-
-  close() {
-    this.db.close();
+    this.writeFile(this.logsFile, logs);
   }
 }
 

@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Collection, EmbedBuilder, REST, Routes } = require('discord.js');
+const { Client, GatewayIntentBits, Collection, EmbedBuilder, REST, Routes, ChannelType } = require('discord.js');
 const { config } = require('dotenv');
 const fs = require('fs');
 const path = require('path');
@@ -34,37 +34,31 @@ for (const file of commandFiles) {
 
 client.once('ready', async () => {
   console.log(`✅ Bot logged in as ${client.user.tag}`);
-  client.user.setActivity('/generate | License Bot', { type: 'WATCHING' });
+  client.user.setActivity('⭐ Hypixel Accounts | /help', { type: 'WATCHING' });
 
-  // Register slash commands
   try {
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
-    
     console.log('📝 Registering slash commands...');
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-    
     console.log('✅ Slash commands registered successfully!');
   } catch (error) {
     console.error('❌ Error registering commands:', error);
   }
 });
 
-// Monitor #hits channel for new messages with explicit console tracking
+// Monitor #hits channel for new messages
 client.on('messageCreate', async (message) => {
   try {
-    // Check if the channel matches your .env file variable configuration
     if (message.channel.id !== process.env.HITS_CHANNEL_ID) return;
 
-    console.log(`\n📡 [HITS CHANNEL EVENT] Message dropped in monitored channel.`);
-    console.log(`   • Author Account Profile: ${message.author.tag} (ID: ${message.author.id})`);
-    console.log(`   • Webhook/App Source Profile Flag: ${message.author.bot ? 'Yes' : 'No'}`);
-    console.log(`   • Immediate Embed Count Payload: ${message.embeds ? message.embeds.length : 0}`);
-    if (message.content) console.log(`   • Plain-Text Contents String: "${message.content}"`);
+    console.log(`\n📡 [HITS CHANNEL EVENT] Message detected`);
+    console.log(`   • Author: ${message.author.tag} (ID: ${message.author.id})`);
+    console.log(`   • Bot Flag: ${message.author.bot ? 'Yes' : 'No'}`);
+    console.log(`   • Embeds Count: ${message.embeds.length}`);
 
-    // Hand execution task processing over to HitsManager
     await require('./managers/HitsManager').processHitsEmbed(message, client);
   } catch (error) {
-    console.error('❌ Error caught within messageCreate handler segment:', error);
+    console.error('❌ Error in messageCreate handler:', error);
   }
 });
 
@@ -89,18 +83,38 @@ client.on('interactionCreate', async (interaction) => {
 
   // Button interactions
   if (interaction.isButton()) {
-    // Core claim initialization button
     if (interaction.customId.startsWith('claim_')) {
       try {
         await require('./managers/AccountManager').handleClaimButton(interaction, client);
       } catch (error) {
         console.error(error);
       }
-    }
-    // Thread decision selections (Claim or Sell)
-    else if (interaction.customId.startsWith('decision_')) {
+    } else if (interaction.customId.startsWith('decision_')) {
       try {
         await require('./managers/AccountManager').handleDecisionButton(interaction, client);
+      } catch (error) {
+        console.error(error);
+      }
+    } else if (interaction.customId.startsWith('buy_')) {
+      try {
+        await require('./managers/TicketManager').handleBuyButton(interaction, client);
+      } catch (error) {
+        console.error(error);
+      }
+    } else if (interaction.customId.startsWith('support_')) {
+      try {
+        await require('./managers/TicketManager').handleSupportButton(interaction, client);
+      } catch (error) {
+        console.error(error);
+      }
+    }
+  }
+
+  // Select menu interactions
+  if (interaction.isStringSelect()) {
+    if (interaction.customId.startsWith('account_select_')) {
+      try {
+        await require('./managers/TicketManager').handleAccountSelect(interaction, client);
       } catch (error) {
         console.error(error);
       }
@@ -109,16 +123,13 @@ client.on('interactionCreate', async (interaction) => {
 
   // Modal submissions
   if (interaction.isModalSubmit()) {
-    // Initial username string verification step
     if (interaction.customId.startsWith('verify_')) {
       try {
         await require('./managers/AccountManager').handleVerifyModal(interaction, client);
       } catch (error) {
         console.error(error);
       }
-    }
-    // Shop custom pricing evaluation submission step
-    else if (interaction.customId.startsWith('sellprice_')) {
+    } else if (interaction.customId.startsWith('sellprice_')) {
       try {
         await require('./managers/AccountManager').handleSellPriceModal(interaction, client);
       } catch (error) {
